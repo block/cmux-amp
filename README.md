@@ -1,31 +1,16 @@
-# cmux-amp README
+# cmux-amp 
 
-Congrats, project leads! You got a new project to grow!
+This is an [Amp](https://ampcode.com/) plugin for [cmux](https://www.cmux.dev/), to display your Agent's status in the `cmux` tab switcher. 
 
-This stub is meant to help you form a strong community around your work. It's yours to adapt, and may 
-diverge from this initial structure. Just keep the files seeded in this repo, and the rest is yours to evolve! 
+![cmux 2026-03-16 at 11 25 54](https://github.com/user-attachments/assets/7ccde294-b578-4a73-ab36-ba9b8b223ed4)
 
-## Introduction
+This depends on the [Amp Plugin API](https://ampcode.com/manual/plugin-api), which is subject to change. 
 
-Orient users to the project here. This is a good place to start with an assumption
-that the user knows very little - so start with the Big Picture and show how this
-project fits into it.
+## Installation
 
-Then maybe a dive into what this project does.
-
-Diagrams and other visuals are helpful here. Perhaps code snippets showing usage.
-
-Project leads should complete, alongside this `README`:
-
-* [CODEOWNERS](./CODEOWNERS) - set project lead(s)
-* [CONTRIBUTING.md](./CONTRIBUTING.md) - Fill out how to: install prereqs, build, test, run, access CI, chat, discuss, file issues
-* [Bug-report.md](.github/ISSUE_TEMPLATE/bug-report.md) - Fill out `Assignees` add codeowners @names
-* [config.yml](.github/ISSUE_TEMPLATE/config.yml) - remove "(/add your discord channel..)" and replace the url with your Discord channel if applicable
-
-The other files in this template repo may be used as-is:
-
-* [GOVERNANCE.md](./GOVERNANCE.md)
-* [LICENSE](./LICENSE)
+1. Symlink `/plugin/cmux-status.ts` into `~/.config/amp/plugins`
+2. Either run Amp with `PLUGINS=all amp`, or set `PLUGINS=all` in your shell's profile
+3. Run `amp` within `cmux`
 
 ## Project Resources
 
