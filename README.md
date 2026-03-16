@@ -8,7 +8,7 @@ This depends on the [Amp Plugin API](https://ampcode.com/manual/plugin-api), whi
 
 ## Installation
 
-1. Symlink `cmux-status.ts` into `~/.config/amp/plugins`
+1. Symlink `/plugin/cmux-status.ts` into `~/.config/amp/plugins`
 2. Either run Amp with `PLUGINS=all amp`, or set `PLUGINS=all` in your shell's profile
 3. Run `amp` within `cmux`
 

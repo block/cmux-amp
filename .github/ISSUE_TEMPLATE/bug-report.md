@@ -3,7 +3,7 @@ name: 🐛 Bug Report
 about: Thank you for taking the time, please report a reproducible bug
 title: "[Bug] <Bug Title Here>"
 labels: bug
-assignees: dlanger@
+assignees: dlanger
 
 ---
 
