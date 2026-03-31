@@ -60,7 +60,52 @@ function toolIcon(tool: string): string {
   }
 }
 
+function shorten(threadId: string): string {
+  return threadId.slice(0, 10) + "…";
+}
+
+// Matches titles the plugin auto-generates: "amp", "T-019d45e1…", or chains like "T-019d… →T-abcd…"
+const AUTO_TITLE_RE = /^(?:amp|T-[0-9a-f]+…)(?: →T-[0-9a-f]+…)*$/i;
+
 export default function (amp: PluginAPI) {
+  const currentThreadId = process.env.AMP_CURRENT_THREAD_ID;
+
+  // Read the current workspace name from cmux so we can detect manual overrides.
+  const getCurrentWorkspaceName = async (): Promise<string | null> => {
+    try {
+      const out = String(await amp.$`cmux list-workspaces`);
+      const line = out.split(/\r?\n/).find((l) => /\[selected\]\s*$/.test(l));
+      if (!line) return null;
+      const match = line.match(/^\*\s+\S+\s{2,}(.*?)\s{2,}\[selected\]\s*$/);
+      return match?.[1]?.trim() ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Only set the workspace title on first start when it's still the default "amp".
+  const bootstrapWorkspaceTitle = async () => {
+    const current = await getCurrentWorkspaceName();
+    if (!current || current === "amp") {
+      const title = currentThreadId ? shorten(currentThreadId) : "amp";
+      try {
+        await amp.$`cmux rename-workspace -- ${title}`;
+      } catch {}
+    }
+  };
+
+  // Append a spawned thread ID to the workspace title, but only if we still own it.
+  const appendSpawnedThread = async (threadId: string) => {
+    const current = await getCurrentWorkspaceName();
+    if (!current || !AUTO_TITLE_RE.test(current)) return;
+    const suffix = "→" + shorten(threadId);
+    if (current.includes(suffix)) return;
+    const next = current === "amp" ? shorten(threadId) : `${current} ${suffix}`;
+    try {
+      await amp.$`cmux rename-workspace -- ${next}`;
+    } catch {}
+  };
+
   const setStatus = async (label: string, icon: string, color: string) => {
     try {
       await amp.$`cmux set-status ${STATUS_KEY} ${label} --icon ${icon} --color ${color}`;
@@ -96,6 +141,7 @@ export default function (amp: PluginAPI) {
 
   amp.on("session.start", async () => {
     await setStatus("idle", "circle", "adb5bd");
+    await bootstrapWorkspaceTitle();
   });
 
   amp.on("agent.start", async () => {
@@ -113,6 +159,16 @@ export default function (amp: PluginAPI) {
   amp.on("tool.result", async (event) => {
     if (event.status === "error") {
       await log(`${event.tool} failed`, "error");
+    }
+
+    // Track spawned handoff thread IDs and append to workspace title if we still own it.
+    if (event.tool === "handoff" && event.status === "done" && event.output) {
+      const output = String(event.output);
+      const match = output.match(/newThreadID>(T-[a-f0-9-]+)</);
+      if (match) {
+        await appendSpawnedThread(match[1]);
+        await log(`spawned thread ${shorten(match[1])}`, "info");
+      }
     }
   });
 
