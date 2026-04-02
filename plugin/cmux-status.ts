@@ -80,7 +80,8 @@ export default function (amp: PluginAPI) {
       const line = out.split(/\r?\n/).find((l) => /\[selected\]\s*$/.test(l));
       if (!line) return null;
       const match = line.match(/^\*\s+\S+\s{2,}(.*?)\s{2,}\[selected\]\s*$/);
-      return match?.[1]?.trim() ?? null;
+      const name = match?.[1]?.trim();
+      return name || null; // treat empty string as no name
     } catch {
       return null;
     }
@@ -106,10 +107,27 @@ export default function (amp: PluginAPI) {
     } catch {}
   };
 
-  // Only set the workspace title on first start when it hasn't been manually renamed.
+  // Set the workspace title on start, but preserve it across agent restarts.
+  // If the workspace already has a name that looks plugin-managed, adopt it
+  // so we don't lose appended spawned-thread suffixes on restart.
   const bootstrapWorkspaceTitle = async () => {
     const current = await getCurrentWorkspaceName();
-    if (isUserRenamed(current)) return;
+    // If we couldn't read the workspace name, don't overwrite — it may be a
+    // user-set name that we'd lose.
+    if (current === null) {
+      await log("workspace name unreadable, skipping rename", "warning");
+      return;
+    }
+    if (isUserRenamed(current)) {
+      await log(`preserving user-set name: ${current}`, "info");
+      return;
+    }
+    // After a restart lastPluginSetName is null; if the workspace already
+    // carries a plugin-managed name, adopt it instead of overwriting.
+    if (lastPluginSetName === null && AUTO_TITLE_RE.test(current)) {
+      lastPluginSetName = current;
+      return;
+    }
     const title = currentThreadId ? shorten(currentThreadId) : "amp";
     await setWorkspaceName(title);
   };
