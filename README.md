@@ -6,6 +6,17 @@ This is an [Amp](https://ampcode.com/) plugin for [cmux](https://www.cmux.dev/),
 
 This depends on the [Amp Plugin API](https://ampcode.com/manual/plugin-api), which is subject to change. 
 
+## Prerequisites
+
+- [Bun](https://bun.sh) — Amp requires Bun to run `.ts` plugins. Install it with:
+  ```bash
+  curl -fsSL https://bun.sh/install | bash
+  ```
+  Or via Homebrew:
+  ```bash
+  brew install oven-sh/bun/bun
+  ```
+
 ## Installation
 
 1. Symlink `plugin/cmux-status.ts` into `~/.config/amp/plugins`
