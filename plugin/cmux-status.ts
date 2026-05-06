@@ -103,6 +103,19 @@ export default function (amp: PluginAPI) {
   const log = amp.logger;
   const helpers = amp.helpers;
 
+  // Pin every cmux call to the workspace this plugin process was launched in.
+  // cmux sets CMUX_WORKSPACE_ID in every pane env, so this is stable across
+  // `plugins: reload` and across async callbacks.
+  //
+  // Without `--workspace`, cmux defaults to whichever pane is *globally
+  // focused* at the moment of the call, which can be a different workspace
+  // by the time our async handler runs. In setups where the plugin process
+  // doesn't inherit a focus context, `cmux notify` and friends then exit
+  // non-zero, the empty `try { ... } catch {}` below swallows the throw,
+  // and the user sees nothing despite the plugin reporting success.
+  const WORKSPACE_REF = process.env.CMUX_WORKSPACE_ID || null;
+  const wsArgs = WORKSPACE_REF ? ["--workspace", WORKSPACE_REF] : [];
+
   // Track the last name we set so we can detect manual renames.
   let lastPluginSetName: string | null = null;
 
@@ -112,34 +125,34 @@ export default function (amp: PluginAPI) {
 
   const setStatus = async (label: string, icon: string, color: string) => {
     try {
-      await $`cmux set-status ${STATUS_KEY} ${label} --icon ${icon} --color ${color}`;
+      await $`cmux set-status ${STATUS_KEY} ${label} --icon ${icon} --color ${color} ${wsArgs}`;
     } catch {}
   };
 
   const clearStatus = async () => {
     try {
-      await $`cmux clear-status ${STATUS_KEY}`;
+      await $`cmux clear-status ${STATUS_KEY} ${wsArgs}`;
     } catch {}
   };
 
   const wsLog = async (message: string, level: string = "info") => {
     try {
-      await $`cmux log --level ${level} --source ${LOG_SOURCE} -- ${message}`;
+      await $`cmux log --level ${level} --source ${LOG_SOURCE} ${wsArgs} -- ${message}`;
     } catch {}
   };
 
   const clearLog = async () => {
     try {
-      await $`cmux clear-log`;
+      await $`cmux clear-log ${wsArgs}`;
     } catch {}
   };
 
   const cmuxNotify = async (title: string, body?: string) => {
     try {
       if (body) {
-        await $`cmux notify --title ${title} --body ${body}`;
+        await $`cmux notify --title ${title} --body ${body} ${wsArgs}`;
       } else {
-        await $`cmux notify --title ${title}`;
+        await $`cmux notify --title ${title} ${wsArgs}`;
       }
     } catch {}
   };
@@ -147,11 +160,20 @@ export default function (amp: PluginAPI) {
   const getCurrentWorkspaceName = async (): Promise<string | null> => {
     try {
       const out = (await $`cmux list-workspaces`).stdout;
-      const line = out.split(/\r?\n/).find((l) => /\[selected\]\s*$/.test(l));
+      const lines = out.split(/\r?\n/);
+      // Prefer matching our pinned workspace ref over the [selected] row,
+      // since the globally-focused workspace may not be ours.
+      if (WORKSPACE_REF) {
+        const escaped = WORKSPACE_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp(`^[\\s*]*${escaped}\\s+(.*?)(?:\\s+\\[selected\\])?\\s*$`);
+        for (const l of lines) {
+          const m = l.match(re);
+          if (m) return m[1]?.trim() || null;
+        }
+      }
+      const line = lines.find((l) => /\[selected\]\s*$/.test(l));
       if (!line) return null;
-      const match = line.match(
-        /^\*\s+\S+\s{2,}(.*?)\s{2,}\[selected\]\s*$/,
-      );
+      const match = line.match(/^\*\s+\S+\s{2,}(.*?)\s{2,}\[selected\]\s*$/);
       const name = match?.[1]?.trim();
       return name || null; // treat empty string as no name
     } catch {
@@ -170,7 +192,7 @@ export default function (amp: PluginAPI) {
 
   const setWorkspaceName = async (title: string) => {
     try {
-      await $`cmux rename-workspace -- ${title}`;
+      await $`cmux rename-workspace ${wsArgs} -- ${title}`;
       lastPluginSetName = title;
     } catch {}
   };
@@ -377,7 +399,7 @@ export default function (amp: PluginAPI) {
       }
       const title = shortenThreadId(threadId);
       try {
-        await ctx.$`cmux rename-workspace -- ${title}`;
+        await ctx.$`cmux rename-workspace ${wsArgs} -- ${title}`;
         lastPluginSetName = title;
         await ctx.ui.notify(`Workspace renamed to ${title}`);
       } catch (err) {
@@ -403,7 +425,7 @@ export default function (amp: PluginAPI) {
       });
       if (!next) return;
       try {
-        await ctx.$`cmux rename-workspace -- ${next}`;
+        await ctx.$`cmux rename-workspace ${wsArgs} -- ${next}`;
         // User-supplied name; release ownership so we don't overwrite it.
         lastPluginSetName = null;
         await ctx.ui.notify(`Workspace renamed to ${next}`);
