@@ -7,6 +7,14 @@ import type {
   AgentStartEvent,
   SessionStartEvent,
 } from "@ampcode/plugin";
+// We deliberately use Bun's shell directly instead of `amp.$` / `ctx.$`.
+// The PluginAPI shell wrapper does NOT auto-escape interpolated values, so
+// strings containing whitespace (e.g. multi-word notification titles) get
+// word-split into multiple argv elements: `cmux_notify({title: "two words"})`
+// gets stored as title="two", body="and stray positional args". It also
+// doesn't expose `.nothrow()` / `.text()` from the underlying ShellPromise.
+// `Bun.$` properly escapes interpolated values and exposes the full API.
+import { $ as bunShell } from "bun";
 
 const STATUS_KEY = "amp";
 const LOG_SOURCE = "amp";
@@ -99,7 +107,8 @@ const truncate = (s: string, max: number): string =>
 const AUTO_TITLE_RE = /^(?:amp|T-[0-9a-f]+…)(?: →T-[0-9a-f]+…)*$/i;
 
 export default function (amp: PluginAPI) {
-  const $ = amp.$;
+  // Use Bun's shell, not `amp.$`. See top-of-file comment for the why.
+  const $ = bunShell;
   const log = amp.logger;
   const helpers = amp.helpers;
 
@@ -159,7 +168,9 @@ export default function (amp: PluginAPI) {
 
   const getCurrentWorkspaceName = async (): Promise<string | null> => {
     try {
-      const out = (await $`cmux list-workspaces`).stdout;
+      // Bun.$ returns a ShellOutput with .stdout as a Buffer. Use .text() to
+      // get a string directly.
+      const out = await $`cmux list-workspaces`.text();
       const lines = out.split(/\r?\n/);
       // Prefer matching our pinned workspace ref over the [selected] row,
       // since the globally-focused workspace may not be ours.
@@ -399,7 +410,8 @@ export default function (amp: PluginAPI) {
       }
       const title = shortenThreadId(threadId);
       try {
-        await ctx.$`cmux rename-workspace ${wsArgs} -- ${title}`;
+        // Use bunShell (not ctx.$) so multi-word titles aren't word-split.
+        await bunShell`cmux rename-workspace ${wsArgs} -- ${title}`;
         lastPluginSetName = title;
         await ctx.ui.notify(`Workspace renamed to ${title}`);
       } catch (err) {
@@ -425,7 +437,8 @@ export default function (amp: PluginAPI) {
       });
       if (!next) return;
       try {
-        await ctx.$`cmux rename-workspace ${wsArgs} -- ${next}`;
+        // Use bunShell (not ctx.$) so multi-word titles aren't word-split.
+        await bunShell`cmux rename-workspace ${wsArgs} -- ${next}`;
         // User-supplied name; release ownership so we don't overwrite it.
         lastPluginSetName = null;
         await ctx.ui.notify(`Workspace renamed to ${next}`);
