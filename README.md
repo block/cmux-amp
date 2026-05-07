@@ -35,9 +35,7 @@ and subject to change.
 1. Symlink (or copy) `plugin/cmux-status.ts` into your plugins directory:
    - System: `~/.config/amp/plugins/cmux-status.ts`
    - Project: `<repo>/.amp/plugins/cmux-status.ts`
-2. Run Amp with plugins enabled: `PLUGINS=all amp` (or set `PLUGINS=all` in
-   your shell profile).
-3. Launch `amp` from inside a cmux workspace.
+2. Launch `amp` from inside a cmux workspace.
 
 > Plugins only work when the Amp CLI is installed via the binary install
 > method (not `npm install`). See the
