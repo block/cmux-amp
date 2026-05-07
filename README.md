@@ -29,6 +29,14 @@ and subject to change.
   - `Rename workspace…` (prompts for a new title)
   - `Clear Amp status`
 - **Macro notification** when an agent turn ends with an error.
+- **Session restore** — when cmux relaunches, Amp threads resume in place via
+  `amp threads continue <id>`. The plugin auto-registers Amp as a custom
+  vault agent in `~/.config/cmux/cmux.json` and writes a hook-session record
+  for each thread. Requires cmux nightly or
+  [≥ 0.64.4 once released](https://github.com/manaflow-ai/cmux/commit/744521d)
+  (custom vault registry support). Older cmux silently ignores the files.
+  - Manual fallback: `cmux: Register Amp for cmux session restore` in the
+    command palette.
 
 ## Installation
 
