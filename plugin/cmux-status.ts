@@ -15,9 +15,22 @@ import type {
 // doesn't expose `.nothrow()` / `.text()` from the underlying ShellPromise.
 // `Bun.$` properly escapes interpolated values and exposes the full API.
 import { $ as bunShell } from "bun";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const STATUS_KEY = "amp";
 const LOG_SOURCE = "amp";
+
+// Bridge plugin that cmux >= 0.64.5's `cmux hooks amp install` writes here.
+// Without it, native restore can't see Amp threads.
+const CMUX_BRIDGE_PLUGIN_PATH = join(
+  homedir(),
+  ".config",
+  "amp",
+  "plugins",
+  "cmux-session.ts",
+);
 
 // Short verbs shown in the cmux status bar for each Amp tool.
 function toolLabel(tool: string): string {
@@ -298,11 +311,22 @@ export default function (amp: PluginAPI) {
   // manaflow-ai/cmux#3710). Run `cmux hooks setup` once to enable; it drops
   // its own `~/.config/amp/plugins/cmux-session.ts` bridge plugin and uses
   // the built-in `.amp` RestorableAgentKind. Nothing in this plugin file
-  // participates in restore anymore.
+  // participates in restore anymore — but we do nudge the user once per
+  // session if the bridge plugin is missing, since the failure mode is
+  // silent (panes just don't restore on relaunch).
+  const checkBridgePluginInstalled = async () => {
+    if (!WORKSPACE_REF) return; // not running under cmux at all
+    if (existsSync(CMUX_BRIDGE_PLUGIN_PATH)) return;
+    await wsLog(
+      "session restore disabled — run `cmux hooks amp install` (requires cmux ≥ 0.64.5) to enable",
+      "warning",
+    );
+  };
 
   amp.on("session.start", async (event: SessionStartEvent) => {
     await setStatus("idle", "circle", COLOR.idle);
     await bootstrapWorkspaceTitle(event.thread?.id);
+    await checkBridgePluginInstalled();
   });
 
   amp.on("agent.start", async (_event: AgentStartEvent) => {

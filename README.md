@@ -33,7 +33,9 @@ and subject to change.
 > Session restore (resume Amp threads after a cmux relaunch) ships natively
 > in cmux ≥ 0.64.5 — see
 > [manaflow-ai/cmux#3710](https://github.com/manaflow-ai/cmux/pull/3710).
-> Run `cmux hooks setup` (or `cmux hooks amp install`) to enable it.
+> Run `cmux hooks setup` (or `cmux hooks amp install`) to enable it; the
+> plugin logs a one-time warning per Amp session if the bridge plugin
+> (`~/.config/amp/plugins/cmux-session.ts`) is missing.
 
 ## Installation
 
