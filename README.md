@@ -33,9 +33,11 @@ and subject to change.
 > Session restore (resume Amp threads after a cmux relaunch) ships natively
 > in cmux ≥ 0.64.5 — see
 > [manaflow-ai/cmux#3710](https://github.com/manaflow-ai/cmux/pull/3710).
-> Run `cmux hooks setup` (or `cmux hooks amp install`) to enable it; the
-> plugin logs a one-time warning per Amp session if the bridge plugin
-> (`~/.config/amp/plugins/cmux-session.ts`) is missing.
+> Run `cmux hooks setup` (or `cmux hooks amp install`) to enable it. If the
+> bridge plugin (`~/.config/amp/plugins/cmux-session.ts`) is missing, the
+> plugin logs a warning to the cmux activity feed every session and
+> additionally fires a native macOS notification at most once per 24h
+> (state in `~/.cache/cmux-amp/bridge-warning.json`).
 
 ## Installation
 

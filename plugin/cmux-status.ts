@@ -15,9 +15,14 @@ import type {
 // doesn't expose `.nothrow()` / `.text()` from the underlying ShellPromise.
 // `Bun.$` properly escapes interpolated values and exposes the full API.
 import { $ as bunShell } from "bun";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const STATUS_KEY = "amp";
 const LOG_SOURCE = "amp";
@@ -31,6 +36,17 @@ const CMUX_BRIDGE_PLUGIN_PATH = join(
   "plugins",
   "cmux-session.ts",
 );
+
+// Where we record the last time we surfaced a native macOS notification
+// about the missing bridge plugin, so we don't nag every session.
+const BRIDGE_WARNING_STATE_PATH = join(
+  homedir(),
+  ".cache",
+  "cmux-amp",
+  "bridge-warning.json",
+);
+
+const BRIDGE_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
 // Short verbs shown in the cmux status bar for each Amp tool.
 function toolLabel(tool: string): string {
@@ -311,16 +327,57 @@ export default function (amp: PluginAPI) {
   // manaflow-ai/cmux#3710). Run `cmux hooks setup` once to enable; it drops
   // its own `~/.config/amp/plugins/cmux-session.ts` bridge plugin and uses
   // the built-in `.amp` RestorableAgentKind. Nothing in this plugin file
-  // participates in restore anymore — but we do nudge the user once per
-  // session if the bridge plugin is missing, since the failure mode is
-  // silent (panes just don't restore on relaunch).
+  // participates in restore anymore — but we do nudge the user if the
+  // bridge plugin is missing, since the failure mode is otherwise silent
+  // (panes just don't restore on relaunch).
+  //
+  // Two channels:
+  //   1. wsLog (cmux activity feed) every session.start — cheap, useful for
+  //      diagnostics, not in the user's face.
+  //   2. cmuxNotify (native macOS notification) at most once per 24h —
+  //      visible enough to actually catch the user's attention without
+  //      being annoying.
   const checkBridgePluginInstalled = async () => {
     if (!WORKSPACE_REF) return; // not running under cmux at all
     if (existsSync(CMUX_BRIDGE_PLUGIN_PATH)) return;
+
     await wsLog(
       "session restore disabled — run `cmux hooks amp install` (requires cmux ≥ 0.64.5) to enable",
       "warning",
     );
+
+    // Rate-limit the popup. State file tracks last notification time;
+    // unparseable / missing file = treat as never-notified.
+    const now = Date.now();
+    let lastNotifiedAt = 0;
+    if (existsSync(BRIDGE_WARNING_STATE_PATH)) {
+      try {
+        const parsed = JSON.parse(
+          readFileSync(BRIDGE_WARNING_STATE_PATH, "utf8"),
+        );
+        if (typeof parsed?.lastNotifiedAt === "number") {
+          lastNotifiedAt = parsed.lastNotifiedAt;
+        }
+      } catch {
+        // Treat unparseable as never-notified; we'll overwrite below.
+      }
+    }
+    if (now - lastNotifiedAt < BRIDGE_WARNING_INTERVAL_MS) return;
+
+    await cmuxNotify(
+      "Amp session restore is off",
+      "Run `cmux hooks amp install` to enable cmux native restore.",
+    );
+
+    try {
+      mkdirSync(dirname(BRIDGE_WARNING_STATE_PATH), { recursive: true });
+      writeFileSync(
+        BRIDGE_WARNING_STATE_PATH,
+        JSON.stringify({ lastNotifiedAt: now }),
+      );
+    } catch (err) {
+      log.log(`bridge-warning state write failed: ${String(err)}`);
+    }
   };
 
   amp.on("session.start", async (event: SessionStartEvent) => {
