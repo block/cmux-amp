@@ -154,6 +154,15 @@ export default function (amp: PluginAPI) {
   const WORKSPACE_REF = process.env.CMUX_WORKSPACE_ID || null;
   const wsArgs = WORKSPACE_REF ? ["--workspace", WORKSPACE_REF] : [];
 
+  // Pin notifications to *this* surface. Without --surface, cmux drops the
+  // notification on whichever surface in the workspace is currently
+  // "default", and any UI activity on that surface triggers
+  // notification.clear_requested → the popup vanishes within seconds. With
+  // --surface set to our own panel, the notification persists in cmux's
+  // inbox until the user actually interacts with the Amp pane.
+  const SURFACE_REF = process.env.CMUX_PANEL_ID || null;
+  const surfaceArgs = SURFACE_REF ? ["--surface", SURFACE_REF] : [];
+
   // Track the last name we set so we can detect manual renames.
   let lastPluginSetName: string | null = null;
 
@@ -188,9 +197,9 @@ export default function (amp: PluginAPI) {
   const cmuxNotify = async (title: string, body?: string) => {
     try {
       if (body) {
-        await $`cmux notify --title ${title} --body ${body} ${wsArgs}`;
+        await $`cmux notify --title ${title} --body ${body} ${wsArgs} ${surfaceArgs}`;
       } else {
-        await $`cmux notify --title ${title} ${wsArgs}`;
+        await $`cmux notify --title ${title} ${wsArgs} ${surfaceArgs}`;
       }
     } catch {}
   };
