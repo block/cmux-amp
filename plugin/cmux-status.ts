@@ -342,7 +342,7 @@ export default function (amp: PluginAPI) {
     if (existsSync(CMUX_BRIDGE_PLUGIN_PATH)) return;
 
     await wsLog(
-      "session restore disabled — run `cmux hooks amp install` (requires cmux ≥ 0.64.5) to enable",
+      "session restore disabled — run `cmux: Install cmux session restore` (requires cmux ≥ 0.64.5) to enable",
       "warning",
     );
 
@@ -366,7 +366,7 @@ export default function (amp: PluginAPI) {
 
     await cmuxNotify(
       "Amp session restore is off",
-      "Run `cmux hooks amp install` to enable cmux native restore.",
+      "Run `cmux: Install cmux session restore` from the Amp command palette to enable.",
     );
 
     try {
@@ -532,6 +532,41 @@ export default function (amp: PluginAPI) {
       } catch (err) {
         await ctx.ui.notify(`Rename failed: ${String(err)}`);
       }
+    },
+  );
+
+  // One-click installer for the cmux >= 0.64.5 bridge plugin. Saves users
+  // from having to drop into a terminal when they hit the missing-bridge
+  // warning — they can run this from the Amp command palette instead.
+  amp.registerCommand(
+    "install-cmux-restore",
+    {
+      title: "Install cmux session restore",
+      category: "cmux",
+      description:
+        "Run `cmux hooks amp install` to enable cmux ≥ 0.64.5's native Amp thread restore. Requires `plugins: reload` afterwards.",
+    },
+    async (ctx) => {
+      try {
+        // -y skips the interactive confirm prompt cmux normally shows.
+        await bunShell`cmux hooks amp install -y`;
+      } catch (err) {
+        await ctx.ui.notify(
+          `Install failed (cmux ≥ 0.64.5 required): ${String(err)}`,
+        );
+        return;
+      }
+      // Verify rather than trusting exit status — older cmux may print
+      // an unrecognized-subcommand error and still exit 0 in some shells.
+      if (!existsSync(CMUX_BRIDGE_PLUGIN_PATH)) {
+        await ctx.ui.notify(
+          `Install ran but ${CMUX_BRIDGE_PLUGIN_PATH} is missing — is cmux ≥ 0.64.5 on PATH?`,
+        );
+        return;
+      }
+      await ctx.ui.notify(
+        "Installed cmux native restore. Run `plugins: reload` (or restart Amp) to activate.",
+      );
     },
   );
 

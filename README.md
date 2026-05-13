@@ -27,6 +27,7 @@ and subject to change.
 - **Command palette actions** under the `cmux:` category:
   - `Rename workspace to thread ID`
   - `Rename workspace…` (prompts for a new title)
+  - `Install cmux session restore` (one-click `cmux hooks amp install`)
   - `Clear Amp status`
 - **Macro notification** when an agent turn ends with an error.
 
