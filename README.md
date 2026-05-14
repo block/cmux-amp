@@ -1,7 +1,7 @@
 # cmux-amp
 
 > [!IMPORTANT]
-> Most of the functionality in this plugin has been ported into the core `cmux` app. Please update your version of `cmux`, try it there, and then only install this plug-in if that doesn't work.  
+> Most of the functionality in this plugin has been ported into the core `cmux` app. Please update your version of `cmux`, try it there, and then only install this plugin if that doesn't work.  
 
 ---
 
