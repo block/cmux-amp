@@ -32,16 +32,18 @@ and subject to change.
 - **Command palette actions** under the `cmux:` category:
   - `Rename workspace to thread ID`
   - `Rename workspace…` (prompts for a new title)
+  - `Install cmux session restore` (one-click `cmux hooks amp install`)
   - `Clear Amp status`
 - **Macro notification** when an agent turn ends with an error.
-- **Session restore** — when cmux relaunches, Amp threads resume in place via
-  `amp threads continue <id>`. The plugin auto-registers Amp as a custom
-  vault agent in `~/.config/cmux/cmux.json` and writes a hook-session record
-  for each thread. Requires cmux nightly or
-  [≥ 0.64.4 once released](https://github.com/manaflow-ai/cmux/commit/744521d)
-  (custom vault registry support). Older cmux silently ignores the files.
-  - Manual fallback: `cmux: Register Amp for cmux session restore` in the
-    command palette.
+
+> Session restore (resume Amp threads after a cmux relaunch) ships natively
+> in cmux ≥ 0.64.5 — see
+> [manaflow-ai/cmux#3710](https://github.com/manaflow-ai/cmux/pull/3710).
+> Run `cmux hooks setup` (or `cmux hooks amp install`) to enable it. If the
+> bridge plugin (`~/.config/amp/plugins/cmux-session.ts`) is missing, the
+> plugin logs a warning to the cmux activity feed every session and
+> additionally fires a native macOS notification at most once per 24h
+> (state in `~/.cache/cmux-amp/bridge-warning.json`).
 
 ## Installation
 

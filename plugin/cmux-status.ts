@@ -15,43 +15,38 @@ import type {
 // doesn't expose `.nothrow()` / `.text()` from the underlying ShellPromise.
 // `Bun.$` properly escapes interpolated values and exposes the full API.
 import { $ as bunShell } from "bun";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 const STATUS_KEY = "amp";
 const LOG_SOURCE = "amp";
 
-// Path cmux reads on relaunch to restore agent sessions.
-// See cmux Sources/RestorableAgentSession.swift → RestorableAgentSessionIndex.load
-const HOOK_SESSIONS_PATH = join(
+// Bridge plugin that cmux >= 0.64.5's `cmux hooks amp install` writes here.
+// Without it, native restore can't see Amp threads.
+const CMUX_BRIDGE_PLUGIN_PATH = join(
   homedir(),
-  ".cmuxterm",
-  "amp-hook-sessions.json",
+  ".config",
+  "amp",
+  "plugins",
+  "cmux-session.ts",
 );
 
-// Path cmux loads vault agent registrations from (JSONC).
-// See cmux Sources/VaultAgentRegistry.swift → CmuxVaultAgentRegistry.load
-const CMUX_CONFIG_PATH = join(homedir(), ".config", "cmux", "cmux.json");
+// Where we record the last time we surfaced a native macOS notification
+// about the missing bridge plugin, so we don't nag every session.
+const BRIDGE_WARNING_STATE_PATH = join(
+  homedir(),
+  ".cache",
+  "cmux-amp",
+  "bridge-warning.json",
+);
 
-// Vault registration that teaches cmux about Amp as a `.custom` RestorableAgentKind.
-// Once present, cmux reads HOOK_SESSIONS_PATH on relaunch and runs `amp threads continue <id>`.
-const VAULT_REGISTRATION = {
-  id: "amp",
-  name: "Amp",
-  detect: { processName: "amp", argvContains: ["amp"] },
-  // sessionIdSource is required by the schema; argvOption is the simplest valid
-  // value. cmux's process scanner uses it for live-detection of running amp
-  // processes, but the hook-sessions.json path doesn't depend on it.
-  sessionIdSource: { type: "argvOption", argvOption: "--thread-id" },
-  resumeCommand: "{{executable}} threads continue {{sessionId}}",
-  cwd: "preserve",
-} as const;
+const BRIDGE_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
 // Short verbs shown in the cmux status bar for each Amp tool.
 function toolLabel(tool: string): string {
@@ -159,6 +154,15 @@ export default function (amp: PluginAPI) {
   const WORKSPACE_REF = process.env.CMUX_WORKSPACE_ID || null;
   const wsArgs = WORKSPACE_REF ? ["--workspace", WORKSPACE_REF] : [];
 
+  // Pin notifications to *this* surface. Without --surface, cmux drops the
+  // notification on whichever surface in the workspace is currently
+  // "default", and any UI activity on that surface triggers
+  // notification.clear_requested → the popup vanishes within seconds. With
+  // --surface set to our own panel, the notification persists in cmux's
+  // inbox until the user actually interacts with the Amp pane.
+  const SURFACE_REF = process.env.CMUX_PANEL_ID || null;
+  const surfaceArgs = SURFACE_REF ? ["--surface", SURFACE_REF] : [];
+
   // Track the last name we set so we can detect manual renames.
   let lastPluginSetName: string | null = null;
 
@@ -193,9 +197,9 @@ export default function (amp: PluginAPI) {
   const cmuxNotify = async (title: string, body?: string) => {
     try {
       if (body) {
-        await $`cmux notify --title ${title} --body ${body} ${wsArgs}`;
+        await $`cmux notify --title ${title} --body ${body} ${wsArgs} ${surfaceArgs}`;
       } else {
-        await $`cmux notify --title ${title} ${wsArgs}`;
+        await $`cmux notify --title ${title} ${wsArgs} ${surfaceArgs}`;
       }
     } catch {}
   };
@@ -328,180 +332,67 @@ export default function (amp: PluginAPI) {
   process.on("SIGTERM", cleanup);
   process.on("exit", cleanup);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Session restore. Two pieces, both written silently per session:
-  //   1. ~/.config/cmux/cmux.json   — registers Amp as a custom vault agent
-  //      so cmux knows how to resume it (`amp threads continue <id>`).
-  //   2. ~/.cmuxterm/amp-hook-sessions.json — records this thread's id keyed
-  //      by cmux workspace/panel so cmux can match it on relaunch.
-  // cmux re-reads both on every autosave tick (see RestorableAgentSessionIndex
-  // .load → CmuxVaultAgentRegistry.load), so changes apply without restart.
+  // Session restore is provided natively by cmux >= 0.64.5 (see
+  // manaflow-ai/cmux#3710). Run `cmux hooks setup` once to enable; it drops
+  // its own `~/.config/amp/plugins/cmux-session.ts` bridge plugin and uses
+  // the built-in `.amp` RestorableAgentKind. Nothing in this plugin file
+  // participates in restore anymore — but we do nudge the user if the
+  // bridge plugin is missing, since the failure mode is otherwise silent
+  // (panes just don't restore on relaunch).
   //
-  // Requires cmux nightly / >= 0.64.4 (custom vault registry support landed
-  // in manaflow-ai/cmux@744521d). Older cmux silently ignores both files.
-  // ─────────────────────────────────────────────────────────────────────────
+  // Two channels:
+  //   1. wsLog (cmux activity feed) every session.start — cheap, useful for
+  //      diagnostics, not in the user's face.
+  //   2. cmuxNotify (native macOS notification) at most once per 24h —
+  //      visible enough to actually catch the user's attention without
+  //      being annoying.
+  const checkBridgePluginInstalled = async () => {
+    if (!WORKSPACE_REF) return; // not running under cmux at all
+    if (existsSync(CMUX_BRIDGE_PLUGIN_PATH)) return;
 
-  const writeHookSession = (threadId: string) => {
-    const workspaceId = process.env.CMUX_WORKSPACE_ID;
-    const surfaceId = process.env.CMUX_PANEL_ID;
-    if (!workspaceId || !surfaceId) {
-      log.log("CMUX_WORKSPACE_ID or CMUX_PANEL_ID missing; skipping restore");
-      return;
+    await wsLog(
+      "session restore disabled — run `cmux: Install cmux session restore` (requires cmux ≥ 0.64.5) to enable",
+      "warning",
+    );
+
+    // Rate-limit the popup. State file tracks last notification time;
+    // unparseable / missing file = treat as never-notified.
+    const now = Date.now();
+    let lastNotifiedAt = 0;
+    if (existsSync(BRIDGE_WARNING_STATE_PATH)) {
+      try {
+        const parsed = JSON.parse(
+          readFileSync(BRIDGE_WARNING_STATE_PATH, "utf8"),
+        );
+        if (typeof parsed?.lastNotifiedAt === "number") {
+          lastNotifiedAt = parsed.lastNotifiedAt;
+        }
+      } catch {
+        // Treat unparseable as never-notified; we'll overwrite below.
+      }
     }
+    if (now - lastNotifiedAt < BRIDGE_WARNING_INTERVAL_MS) return;
+
+    await cmuxNotify(
+      "Amp session restore is off",
+      "Run `cmux: Install cmux session restore` from the Amp command palette to enable.",
+    );
 
     try {
-      mkdirSync(dirname(HOOK_SESSIONS_PATH), { recursive: true });
-      let store: { version: number; sessions: Record<string, unknown> } = {
-        version: 1,
-        sessions: {},
-      };
-      if (existsSync(HOOK_SESSIONS_PATH)) {
-        try {
-          const existing = JSON.parse(readFileSync(HOOK_SESSIONS_PATH, "utf8"));
-          if (existing && typeof existing === "object") {
-            store = existing;
-            if (!store.sessions) store.sessions = {};
-          }
-          // If parsing fails we'd rather skip than nuke other agents'
-          // entries by overwriting with an empty store.
-        } catch {
-          log.log("amp-hook-sessions.json corrupt; skipping write");
-          return;
-        }
-      }
-      // process.cwd() in a plugin is the plugin file's dir, not the user's
-      // shell cwd. PWD is inherited from amp's launch env which preserves it.
-      const cwd = process.env.PWD ?? process.cwd();
-      // Key by panelId so the same surface only ever has one active session.
-      store.sessions[surfaceId] = {
-        sessionId: threadId,
-        workspaceId,
-        surfaceId,
-        cwd,
-        launchCommand: {
-          executablePath: process.env.AMP_EXECUTABLE_PATH ?? "amp",
-          arguments: ["amp"],
-          workingDirectory: cwd,
-        },
-        updatedAt: Date.now() / 1000,
-      };
-      writeFileSync(HOOK_SESSIONS_PATH, JSON.stringify(store, null, 2));
-    } catch (err) {
-      log.log(`hook-sessions write failed: ${String(err)}`);
-    }
-  };
-
-  // Convert JSONC (cmux.json's format) to plain JSON so we can JSON.parse it.
-  // Strips // and /* */ comments and trailing commas before } or ].
-  // (cmux uses JSONCParser.preprocess on read; we mirror that here.)
-  const stripJsonComments = (input: string): string => {
-    let out = "";
-    let i = 0;
-    let inString = false;
-    let stringQuote = "";
-    while (i < input.length) {
-      const ch = input[i];
-      const next = input[i + 1];
-      if (inString) {
-        out += ch;
-        if (ch === "\\" && i + 1 < input.length) {
-          out += input[i + 1];
-          i += 2;
-          continue;
-        }
-        if (ch === stringQuote) inString = false;
-        i++;
-        continue;
-      }
-      if (ch === '"' || ch === "'") {
-        inString = true;
-        stringQuote = ch;
-        out += ch;
-        i++;
-        continue;
-      }
-      if (ch === "/" && next === "/") {
-        while (i < input.length && input[i] !== "\n") i++;
-        continue;
-      }
-      if (ch === "/" && next === "*") {
-        i += 2;
-        while (i < input.length && !(input[i] === "*" && input[i + 1] === "/"))
-          i++;
-        i += 2;
-        continue;
-      }
-      out += ch;
-      i++;
-    }
-    // Drop trailing commas before } or ] (JSONC allows them; JSON does not).
-    return out.replace(/,(\s*[}\]])/g, "$1");
-  };
-
-  // Idempotently ensure ~/.config/cmux/cmux.json contains the Amp vault
-  // registration. Returns "added" | "present" | "skipped" | "failed".
-  const ensureVaultRegistration = ():
-    | "added"
-    | "present"
-    | "skipped"
-    | "failed" => {
-    try {
-      let raw = "";
-      let parsed: { vault?: { agents?: unknown[] } } & Record<string, unknown> =
-        {};
-      if (existsSync(CMUX_CONFIG_PATH)) {
-        raw = readFileSync(CMUX_CONFIG_PATH, "utf8");
-        try {
-          const decoded = JSON.parse(stripJsonComments(raw));
-          if (decoded && typeof decoded === "object") parsed = decoded;
-        } catch {
-          // Don't risk corrupting a config we can't parse. User can fix
-          // manually or run the command palette command for an explicit
-          // error.
-          log.log(
-            "cmux.json is unparseable JSONC; vault registration skipped",
-          );
-          return "skipped";
-        }
-      }
-
-      parsed.vault = parsed.vault ?? {};
-      const agents = Array.isArray(parsed.vault.agents)
-        ? parsed.vault.agents
-        : [];
-      const present = agents.some(
-        (a: unknown) =>
-          !!a && typeof a === "object" && (a as { id?: unknown }).id === "amp",
-      );
-      if (present) return "present";
-
-      agents.push(VAULT_REGISTRATION);
-      parsed.vault.agents = agents;
-
-      if (raw) {
-        const backup = `${CMUX_CONFIG_PATH}.${Date.now()}.bak`;
-        writeFileSync(backup, raw);
-      }
-      mkdirSync(dirname(CMUX_CONFIG_PATH), { recursive: true });
+      mkdirSync(dirname(BRIDGE_WARNING_STATE_PATH), { recursive: true });
       writeFileSync(
-        CMUX_CONFIG_PATH,
-        JSON.stringify(parsed, null, 2) + "\n",
+        BRIDGE_WARNING_STATE_PATH,
+        JSON.stringify({ lastNotifiedAt: now }),
       );
-      log.log("registered Amp as custom vault agent in cmux.json");
-      return "added";
     } catch (err) {
-      log.log(`vault registration failed: ${String(err)}`);
-      return "failed";
+      log.log(`bridge-warning state write failed: ${String(err)}`);
     }
   };
 
   amp.on("session.start", async (event: SessionStartEvent) => {
     await setStatus("idle", "circle", COLOR.idle);
     await bootstrapWorkspaceTitle(event.thread?.id);
-    if (event.thread?.id) {
-      ensureVaultRegistration();
-      writeHookSession(event.thread.id);
-    }
+    await checkBridgePluginInstalled();
   });
 
   amp.on("agent.start", async (_event: AgentStartEvent) => {
@@ -653,35 +544,38 @@ export default function (amp: PluginAPI) {
     },
   );
 
-  // Manual fallback. Registration normally happens automatically on
-  // session.start; this command is useful for explicit feedback when the
-  // automatic write was skipped (e.g. unparseable cmux.json).
+  // One-click installer for the cmux >= 0.64.5 bridge plugin. Saves users
+  // from having to drop into a terminal when they hit the missing-bridge
+  // warning — they can run this from the Amp command palette instead.
   amp.registerCommand(
-    "register-vault-amp",
+    "install-cmux-restore",
     {
-      title: "Register Amp for cmux session restore",
+      title: "Install cmux session restore",
       category: "cmux",
       description:
-        "Re-add Amp as a custom vault agent in ~/.config/cmux/cmux.json. Normally runs automatically.",
+        "Run `cmux hooks amp install` to enable cmux ≥ 0.64.5's native Amp thread restore. Requires `plugins: reload` afterwards.",
     },
     async (ctx) => {
-      const result = ensureVaultRegistration();
-      switch (result) {
-        case "added":
-          await ctx.ui.notify("Amp registered for cmux session restore");
-          break;
-        case "present":
-          await ctx.ui.notify("Amp already registered");
-          break;
-        case "skipped":
-          await ctx.ui.notify(
-            "cmux.json is unparseable JSONC; add the `amp` vault entry manually",
-          );
-          break;
-        case "failed":
-          await ctx.ui.notify("Registration failed; see Amp plugin log");
-          break;
+      try {
+        // -y skips the interactive confirm prompt cmux normally shows.
+        await bunShell`cmux hooks amp install -y`;
+      } catch (err) {
+        await ctx.ui.notify(
+          `Install failed (cmux ≥ 0.64.5 required): ${String(err)}`,
+        );
+        return;
       }
+      // Verify rather than trusting exit status — older cmux may print
+      // an unrecognized-subcommand error and still exit 0 in some shells.
+      if (!existsSync(CMUX_BRIDGE_PLUGIN_PATH)) {
+        await ctx.ui.notify(
+          `Install ran but ${CMUX_BRIDGE_PLUGIN_PATH} is missing — is cmux ≥ 0.64.5 on PATH?`,
+        );
+        return;
+      }
+      await ctx.ui.notify(
+        "Installed cmux native restore. Run `plugins: reload` (or restart Amp) to activate.",
+      );
     },
   );
 
