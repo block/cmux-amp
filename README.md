@@ -1,5 +1,10 @@
 # cmux-amp
 
+> [!IMPORTANT]
+> Most of the functionality in this plugin has been ported into the core `cmux` app. Please update your version of `cmux`, try it there, and then only install this plug-in if that doesn't work.  
+
+---
+
 [Amp](https://ampcode.com/) plugin for [cmux](https://www.cmux.dev/) that turns
 your cmux tab into a live dashboard for the Amp agent.
 
