@@ -146,18 +146,69 @@ export default function (amp: PluginAPI) {
   const log = amp.logger;
   const helpers = amp.helpers;
 
-  // Pin every cmux call to the workspace this plugin process was launched in.
-  // cmux sets CMUX_WORKSPACE_ID in every pane env, so this is stable across
-  // `plugins: reload` and across async callbacks.
+  // The surface (tab) this plugin process was launched in. Surfaces have
+  // stable IDs that follow the tab when the user moves it to a different
+  // workspace, unlike CMUX_WORKSPACE_ID which only reflects the workspace at
+  // *launch* time. We resolve the surface → current workspace dynamically on
+  // every cmux call so status updates, logs, and notifications follow the
+  // tab if it gets moved.
   //
-  // Without `--workspace`, cmux defaults to whichever pane is *globally
-  // focused* at the moment of the call, which can be a different workspace
-  // by the time our async handler runs. In setups where the plugin process
-  // doesn't inherit a focus context, `cmux notify` and friends then exit
-  // non-zero, the empty `try { ... } catch {}` below swallows the throw,
-  // and the user sees nothing despite the plugin reporting success.
-  const WORKSPACE_REF = process.env.CMUX_WORKSPACE_ID || null;
-  const wsArgs = WORKSPACE_REF ? ["--workspace", WORKSPACE_REF] : [];
+  // Without an explicit --workspace, cmux defaults to whichever pane is
+  // *globally focused* at the moment of the call, which can be a different
+  // workspace by the time our async handler runs. In setups where the plugin
+  // process doesn't inherit a focus context, `cmux notify` and friends then
+  // exit non-zero, the empty `try { ... } catch {}` below swallows the
+  // throw, and the user sees nothing despite the plugin reporting success.
+  const SURFACE_REF = process.env.CMUX_SURFACE_ID || null;
+  const LAUNCH_WORKSPACE_REF = process.env.CMUX_WORKSPACE_ID || null;
+
+  // Short-lived cache so a burst of cmux calls during a single tool turn
+  // doesn't spam `rpc system.tree`. Surfaces don't move often, so even a
+  // small TTL is enough to coalesce the rapid status/log calls fired from
+  // tool.call → tool.result.
+  let cachedWorkspaceRef: string | null = LAUNCH_WORKSPACE_REF;
+  let cachedAt = 0;
+  const WORKSPACE_CACHE_TTL_MS = 500;
+
+  const resolveCurrentWorkspaceRef = async (): Promise<string | null> => {
+    if (!SURFACE_REF) return LAUNCH_WORKSPACE_REF;
+    const now = Date.now();
+    if (cachedWorkspaceRef && now - cachedAt < WORKSPACE_CACHE_TTL_MS) {
+      return cachedWorkspaceRef;
+    }
+    try {
+      const out = await $`cmux rpc system.tree`.text();
+      const tree = JSON.parse(out) as {
+        windows?: Array<{
+          workspaces?: Array<{
+            id?: string;
+            panes?: Array<{ surface_ids?: string[] }>;
+          }>;
+        }>;
+      };
+      for (const win of tree.windows ?? []) {
+        for (const ws of win.workspaces ?? []) {
+          for (const pane of ws.panes ?? []) {
+            if (pane.surface_ids?.includes(SURFACE_REF)) {
+              if (ws.id) {
+                cachedWorkspaceRef = ws.id;
+                cachedAt = now;
+                return ws.id;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // fall through to cached/launch value
+    }
+    return cachedWorkspaceRef;
+  };
+
+  const getWsArgs = async (): Promise<string[]> => {
+    const ref = await resolveCurrentWorkspaceRef();
+    return ref ? ["--workspace", ref] : [];
+  };
 
   // Track the last name we set so we can detect manual renames.
   let lastPluginSetName: string | null = null;
@@ -168,30 +219,35 @@ export default function (amp: PluginAPI) {
 
   const setStatus = async (label: string, icon: string, color: string) => {
     try {
+      const wsArgs = await getWsArgs();
       await $`cmux set-status ${STATUS_KEY} ${label} --icon ${icon} --color ${color} ${wsArgs}`;
     } catch {}
   };
 
   const clearStatus = async () => {
     try {
+      const wsArgs = await getWsArgs();
       await $`cmux clear-status ${STATUS_KEY} ${wsArgs}`;
     } catch {}
   };
 
   const wsLog = async (message: string, level: string = "info") => {
     try {
+      const wsArgs = await getWsArgs();
       await $`cmux log --level ${level} --source ${LOG_SOURCE} ${wsArgs} -- ${message}`;
     } catch {}
   };
 
   const clearLog = async () => {
     try {
+      const wsArgs = await getWsArgs();
       await $`cmux clear-log ${wsArgs}`;
     } catch {}
   };
 
   const cmuxNotify = async (title: string, body?: string) => {
     try {
+      const wsArgs = await getWsArgs();
       if (body) {
         await $`cmux notify --title ${title} --body ${body} ${wsArgs}`;
       } else {
@@ -206,10 +262,11 @@ export default function (amp: PluginAPI) {
       // get a string directly.
       const out = await $`cmux list-workspaces`.text();
       const lines = out.split(/\r?\n/);
-      // Prefer matching our pinned workspace ref over the [selected] row,
-      // since the globally-focused workspace may not be ours.
-      if (WORKSPACE_REF) {
-        const escaped = WORKSPACE_REF.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Prefer matching our surface's current workspace over the [selected]
+      // row, since the globally-focused workspace may not be ours.
+      const currentRef = await resolveCurrentWorkspaceRef();
+      if (currentRef) {
+        const escaped = currentRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const re = new RegExp(`^[\\s*]*${escaped}\\s+(.*?)(?:\\s+\\[selected\\])?\\s*$`);
         for (const l of lines) {
           const m = l.match(re);
@@ -237,6 +294,7 @@ export default function (amp: PluginAPI) {
 
   const setWorkspaceName = async (title: string) => {
     try {
+      const wsArgs = await getWsArgs();
       await $`cmux rename-workspace ${wsArgs} -- ${title}`;
       lastPluginSetName = title;
     } catch {}
@@ -341,8 +399,12 @@ export default function (amp: PluginAPI) {
   // in manaflow-ai/cmux@744521d). Older cmux silently ignores both files.
   // ─────────────────────────────────────────────────────────────────────────
 
-  const writeHookSession = (threadId: string) => {
-    const workspaceId = process.env.CMUX_WORKSPACE_ID;
+  const writeHookSession = async (threadId: string) => {
+    // Resolve the *current* workspace (which may differ from the launch
+    // workspace if the user moved this surface) so cmux restores the thread
+    // into the right place.
+    const workspaceId =
+      (await resolveCurrentWorkspaceRef()) ?? process.env.CMUX_WORKSPACE_ID;
     const surfaceId = process.env.CMUX_PANEL_ID;
     if (!workspaceId || !surfaceId) {
       log.log("CMUX_WORKSPACE_ID or CMUX_PANEL_ID missing; skipping restore");
@@ -500,7 +562,7 @@ export default function (amp: PluginAPI) {
     await bootstrapWorkspaceTitle(event.thread?.id);
     if (event.thread?.id) {
       ensureVaultRegistration();
-      writeHookSession(event.thread.id);
+      await writeHookSession(event.thread.id);
     }
   });
 
@@ -615,6 +677,7 @@ export default function (amp: PluginAPI) {
       }
       const title = shortenThreadId(threadId);
       try {
+        const wsArgs = await getWsArgs();
         // Use bunShell (not ctx.$) so multi-word titles aren't word-split.
         await bunShell`cmux rename-workspace ${wsArgs} -- ${title}`;
         lastPluginSetName = title;
@@ -642,6 +705,7 @@ export default function (amp: PluginAPI) {
       });
       if (!next) return;
       try {
+        const wsArgs = await getWsArgs();
         // Use bunShell (not ctx.$) so multi-word titles aren't word-split.
         await bunShell`cmux rename-workspace ${wsArgs} -- ${next}`;
         // User-supplied name; release ownership so we don't overwrite it.
